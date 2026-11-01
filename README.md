@@ -2,7 +2,7 @@
 ### Decentralized, Trustless Merchant Checkout & Autonomous Escrow Standard
 **Authors:** Lambert Van Sittert & Antigravity (Susan)  
 **Target Networks:** TRON (TVM / TRC-20), EVM (Ethereum, Arbitrum, Polygon, BSC)  
-**Status:** Draft / Open Specification  
+**Repository:** `https://github.com/Lambertvs/sovereign-payer-protocol`  
 
 ---
 

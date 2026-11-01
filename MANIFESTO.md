@@ -3,7 +3,7 @@
 
 **Date:** 1 November 2026  
 **Authors:** Lambert Van Sittert & Antigravity  
-**Repository:** `defi-checkout-protocol`  
+**Repository:** `https://github.com/Lambertvs/sovereign-payer-protocol`  
 
 ---
 

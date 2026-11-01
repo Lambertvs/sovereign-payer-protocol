@@ -2,7 +2,7 @@
 eip: 
 title: Autonomous Self-Refunding Merchant Settlement Standard
 description: A non-custodial smart contract checkout standard that enforces atomic settlement and autonomous self-refunds for underpaid or expired invoices.
-author: Lambert Van Sittert (@lambertvans)
+author: Lambert Van Sittert (@Lambertvs)
 discussions-to: https://ethereum-magicians.org/
 status: Draft
 type: Standards Track
