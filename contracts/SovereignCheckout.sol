@@ -2,103 +2,130 @@
 pragma solidity ^0.8.20;
 
 /**
- * @dev Minimal interface for TRC-20 / ERC-20 token standard.
+ * @dev Low-level safe token transfer library handling non-standard ERC-20 implementations (e.g. mainnet USDT
+ *      which does not return a boolean) and reverts with clear errors.
  */
-interface IERC20 {
-    function totalSupply() external view returns (uint256);
-    function balanceOf(address account) external view returns (uint256);
-    function transfer(address to, uint256 amount) external returns (bool);
-    function allowance(address owner, address spender) external view returns (uint256);
-    function approve(address spender, uint256 amount) external returns (bool);
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+library SafeTransferLib {
+    function safeTransfer(address token, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0xa9059cbb, to, amount)
+        );
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeTransfer: failed");
+    }
+
+    function safeTransferFrom(address token, address from, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0x23b872dd, from, to, amount)
+        );
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeTransferFrom: failed");
+    }
+
+    function getBalance(address token, address account) internal view returns (uint256) {
+        (bool success, bytes memory data) = token.staticcall(
+            abi.encodeWithSelector(0x70a08231, account)
+        );
+        require(success && data.length >= 32, "GetBalance: failed");
+        return abi.decode(data, (uint256));
+    }
 }
 
 /**
  * @title SovereignCheckout
  * @notice Trustless, Non-Custodial Merchant Settlement with Deterministic Self-Refunds.
- * @dev Hardened against front-running and dust-attacker griefing via isolated per-payer refund ledgers.
- * 
- * Works identically across TVM (TRON TRC-20) and EVM (Ethereum, BSC, Arbitrum, Polygon).
+ * @dev Hardened against:
+ *      1. Front-running / invoice squatting by scoping invoices to keccak256(merchant, invoiceId).
+ *      2. Non-standard ERC-20 tokens (e.g., mainnet USDT missing return boolean).
+ *      3. Fee-on-transfer discrepancies via strict pre/post balance differential accounting.
+ *      4. Dust-attacker front-running via isolated per-payer refund ledgers.
+ *      5. Permissionless keeper refunds (claimRefundFor) while strictly enforcing authorized refund destinations.
  */
 contract SovereignCheckout {
+    using SafeTransferLib for address;
 
     enum InvoiceStatus { Active, Settled, Cancelled }
 
     struct Invoice {
-        bytes32 invoiceId;         // Unique Merchant Order Reference (e.g., keccak256("267842472_4"))
         address merchant;          // Recipient merchant
-        address boundPayer;        // Optional: Bound payer address (address(0) if open to any contributor)
-        address token;             // TRC-20 / ERC-20 token address (e.g., USDT)
+        address boundPayer;        // Optional: Specific bound payer (address(0) if open)
+        address token;             // Payment token (e.g., USDT)
         uint256 expectedAmount;    // Exact required amount (in token decimals)
-        uint256 totalAmountPaid;   // Cumulative amount paid across all contributors
-        uint256 expiryTimestamp;   // Timestamp after which self-refund is unlocked
+        uint256 totalAmountPaid;   // Cumulative net tokens received across all contributors
+        uint256 expiryTimestamp;   // Timestamp after which refunds unlock
         InvoiceStatus status;      // Current invoice lifecycle state
     }
 
-    // Mapping from unique invoiceId to Invoice struct
+    struct PayerRecord {
+        uint256 amountDeposited;   // Net balance available for refund
+        address refundAddress;     // Authorized destination address for this payer
+    }
+
+    // Mapping from computed invoiceKey (keccak256(merchant, invoiceId)) to Invoice
     mapping(bytes32 => Invoice) public invoices;
 
-    // Hardened Multi-Payer Escrow Ledger: invoiceId => payerAddress => depositedAmount
-    // Guarantees that each contributor can ONLY refund their own deposited funds.
-    mapping(bytes32 => mapping(address => uint256)) public payerDeposits;
+    // Hardened Isolated Escrow Ledger: invoiceKey => payerAddress => PayerRecord
+    mapping(bytes32 => mapping(address => PayerRecord)) public payerRecords;
 
-    // Events emitted for transparent on-chain indexing & zero-latency Web3 notifications
+    // Events emitted for transparent on-chain indexing
     event InvoiceCreated(
-        bytes32 indexed invoiceId, 
-        address indexed merchant, 
-        address indexed boundPayer,
-        address token, 
-        uint256 expectedAmount, 
+        bytes32 indexed invoiceKey,
+        address indexed merchant,
+        bytes32 indexed invoiceId,
+        address boundPayer,
+        address token,
+        uint256 expectedAmount,
         uint256 expiryTimestamp
     );
 
     event PaymentReceived(
-        bytes32 indexed invoiceId, 
-        address indexed payer, 
-        uint256 amount, 
-        uint256 totalPaid, 
+        bytes32 indexed invoiceKey,
+        address indexed payer,
+        address indexed refundAddress,
+        uint256 netAmountReceived,
+        uint256 totalPaid,
         uint256 remaining
     );
 
     event InvoiceSettled(
-        bytes32 indexed invoiceId, 
-        address indexed merchant, 
+        bytes32 indexed invoiceKey,
+        address indexed merchant,
         uint256 totalAmount
     );
 
     event AutonomousRefundClaimed(
-        bytes32 indexed invoiceId, 
-        address indexed payer, 
-        uint256 amountRefunded
+        bytes32 indexed invoiceKey,
+        address indexed payer,
+        address indexed recipient,
+        uint256 amountRefunded,
+        address triggeredBy
     );
 
-    event InvoiceCancelled(bytes32 indexed invoiceId);
+    event InvoiceCancelled(bytes32 indexed invoiceKey);
+
+    /**
+     * @notice Computes the immutable unique key for an invoice scoped to a specific merchant.
+     * @dev Eliminates front-running, squatting, and cross-merchant collision.
+     */
+    function getInvoiceKey(address merchant, bytes32 invoiceId) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(merchant, invoiceId));
+    }
 
     // ==========================================
     // 1. INVOICE CREATION (MERCHANT)
     // ==========================================
 
-    /**
-     * @notice Creates a new deterministic invoice.
-     * @param invoiceId Unique hash representing the merchant's internal order ref.
-     * @param boundPayer Optional: Specific payer address (use address(0) to allow open payments).
-     * @param token Address of the payment token (e.g., USDT).
-     * @param expectedAmount Exact amount required for successful settlement.
-     * @param durationSeconds Time window in seconds before customers can trigger an autonomous self-refund.
-     */
     function createInvoice(
         bytes32 invoiceId,
         address boundPayer,
         address token,
         uint256 expectedAmount,
         uint256 durationSeconds
-    ) external {
-        require(invoices[invoiceId].merchant == address(0), "Invoice ID already exists");
+    ) external returns (bytes32 invoiceKey) {
+        invoiceKey = getInvoiceKey(msg.sender, invoiceId);
+        require(invoices[invoiceKey].merchant == address(0), "Invoice already exists for merchant");
         require(expectedAmount > 0, "Expected amount must be greater than zero");
         require(durationSeconds >= 600, "Minimum expiry window is 10 minutes");
 
-        invoices[invoiceId] = Invoice({
-            invoiceId: invoiceId,
+        invoices[invoiceKey] = Invoice({
             merchant: msg.sender,
             boundPayer: boundPayer,
             token: token,
@@ -109,109 +136,127 @@ contract SovereignCheckout {
         });
 
         emit InvoiceCreated(
-            invoiceId, 
-            msg.sender, 
+            invoiceKey,
+            msg.sender,
+            invoiceId,
             boundPayer,
-            token, 
-            expectedAmount, 
+            token,
+            expectedAmount,
             block.timestamp + durationSeconds
         );
     }
 
     // ==========================================
-    // 2. PAYMENT WITH PER-PAYER ACCOUNTING
+    // 2. PAYMENT WITH SQUATTING & USDT DEFENSES
     // ==========================================
 
     /**
      * @notice Pay towards an active invoice. 
-     * @dev Tracks deposited balances strictly per `msg.sender` to eliminate dust front-running attacks.
-     *      Under NO circumstances can the merchant sweep or touch underpaid funds.
-     * @param invoiceId The invoice being paid.
-     * @param amount The token amount to pay.
+     * @dev Scoped by (merchant, invoiceId) to prevent merchant-squatting. Uses balance differential
+     *      to guarantee exact net tokens received (safeguarding against fee-on-transfer tokens) and
+     *      SafeTransferLib to support non-standard tokens like mainnet USDT.
+     * @param merchant The recipient merchant address.
+     * @param invoiceId The unique merchant order ID.
+     * @param amount The token amount to transfer.
+     * @param refundAddress Explicit authorized destination for refunds (defaults to msg.sender if zero).
      */
     function payInvoice(
+        address merchant,
         bytes32 invoiceId,
-        uint256 amount
+        uint256 amount,
+        address refundAddress
     ) external {
-        Invoice storage inv = invoices[invoiceId];
+        bytes32 invoiceKey = getInvoiceKey(merchant, invoiceId);
+        Invoice storage inv = invoices[invoiceKey];
+
         require(inv.status == InvoiceStatus.Active, "Invoice is not active");
         require(block.timestamp <= inv.expiryTimestamp, "Invoice has expired");
         require(amount > 0, "Payment amount must be greater than zero");
 
-        // If invoice is bound to a specific payer, enforce identity
         if (inv.boundPayer != address(0)) {
             require(msg.sender == inv.boundPayer, "Caller is not authorized payer");
         }
 
-        // Pull tokens from payer into THIS contract (NOT merchant master vault)
-        bool success = IERC20(inv.token).transferFrom(msg.sender, address(this), amount);
-        require(success, "Token transfer failed");
+        address designatedRefund = (refundAddress != address(0)) ? refundAddress : msg.sender;
 
-        // Record individual payer contribution in isolated ledger
-        payerDeposits[invoiceId][msg.sender] += amount;
-        inv.totalAmountPaid += amount;
+        // Measure actual net tokens received to prevent fee-on-transfer under-collateralization
+        uint256 balanceBefore = inv.token.getBalance(address(this));
+        inv.token.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 balanceAfter = inv.token.getBalance(address(this));
+        uint256 netReceived = balanceAfter - balanceBefore;
+        require(netReceived > 0, "Zero tokens received");
 
-        // CHECK 1: FULL SETTLEMENT ACHIEVED
+        PayerRecord storage record = payerRecords[invoiceKey][msg.sender];
+        record.amountDeposited += netReceived;
+        record.refundAddress = designatedRefund;
+
+        inv.totalAmountPaid += netReceived;
+
         if (inv.totalAmountPaid >= inv.expectedAmount) {
             inv.status = InvoiceStatus.Settled;
             
-            // Release funds directly to the merchant
-            bool settleSuccess = IERC20(inv.token).transfer(inv.merchant, inv.totalAmountPaid);
-            require(settleSuccess, "Merchant transfer failed");
-
-            emit InvoiceSettled(invoiceId, inv.merchant, inv.totalAmountPaid);
+            inv.token.safeTransfer(inv.merchant, inv.totalAmountPaid);
+            emit InvoiceSettled(invoiceKey, inv.merchant, inv.totalAmountPaid);
         } else {
-            // CHECK 2: PARTIAL PAYMENT / SHORTFALL
             uint256 remaining = inv.expectedAmount - inv.totalAmountPaid;
-            emit PaymentReceived(invoiceId, msg.sender, amount, inv.totalAmountPaid, remaining);
+            emit PaymentReceived(invoiceKey, msg.sender, designatedRefund, netReceived, inv.totalAmountPaid, remaining);
         }
     }
 
     // ==========================================
-    // 3. HARDENED AUTONOMOUS SELF-REFUND
+    // 3. PERMISSIONLESS KEEPER-COMPATIBLE REFUND
     // ==========================================
 
     /**
-     * @notice Autonomous, decentralized self-refund for individual contributors.
-     * @dev If the invoice expired without reaching full settlement, the caller reclaims ONLY
-     *      their personally deposited balance. Eliminates front-running and dust theft.
-     * @param invoiceId The invoice to refund from.
+     * @notice Permissionless refund for a specified payer.
+     * @dev ANYONE (keeper bot, merchant, or user) can call this once expired or cancelled.
+     *      Funds are strictly routed to the authorized `refundAddress` registered by that payer.
+     *      Sequential claims by multiple contributors are preserved independently.
      */
-    function claimRefund(bytes32 invoiceId) external {
-        Invoice storage inv = invoices[invoiceId];
+    function claimRefundFor(address merchant, bytes32 invoiceId, address payer) public {
+        bytes32 invoiceKey = getInvoiceKey(merchant, invoiceId);
+        Invoice storage inv = invoices[invoiceKey];
+
         require(inv.status == InvoiceStatus.Active || inv.status == InvoiceStatus.Cancelled, "Invoice cannot be refunded");
         if (inv.status == InvoiceStatus.Active) {
             require(block.timestamp > inv.expiryTimestamp, "Invoice has not expired yet");
         }
 
-        uint256 callerBalance = payerDeposits[invoiceId][msg.sender];
-        require(callerBalance > 0, "Caller has zero deposited balance to refund");
+        PayerRecord storage record = payerRecords[invoiceKey][payer];
+        uint256 claimable = record.amountDeposited;
+        require(claimable > 0, "No refundable balance for specified payer");
 
-        // Re-entrancy protection: zero balance before transfer
-        payerDeposits[invoiceId][msg.sender] = 0;
-        inv.totalAmountPaid -= callerBalance;
+        address destination = record.refundAddress;
+        require(destination != address(0), "Invalid refund address");
 
-        // Execute deterministic refund directly to msg.sender
-        bool refundSuccess = IERC20(inv.token).transfer(msg.sender, callerBalance);
-        require(refundSuccess, "Refund transfer failed");
+        // Checks-Effects-Interactions: zero out balance before transfer
+        record.amountDeposited = 0;
+        inv.totalAmountPaid -= claimable;
 
-        emit AutonomousRefundClaimed(invoiceId, msg.sender, callerBalance);
+        inv.token.safeTransfer(destination, claimable);
+
+        emit AutonomousRefundClaimed(invoiceKey, payer, destination, claimable, msg.sender);
+    }
+
+    /**
+     * @notice Convenience self-refund for callers reclaiming their own funds.
+     */
+    function claimRefund(address merchant, bytes32 invoiceId) external {
+        claimRefundFor(merchant, invoiceId, msg.sender);
     }
 
     // ==========================================
     // 4. MERCHANT EARLY CANCELLATION
     // ==========================================
 
-    /**
-     * @notice Allows the merchant to cancel an active invoice early, unlocking refunds immediately.
-     * @param invoiceId The invoice to cancel.
-     */
     function merchantCancel(bytes32 invoiceId) external {
-        Invoice storage inv = invoices[invoiceId];
-        require(msg.sender == inv.merchant, "Only merchant can cancel");
+        bytes32 invoiceKey = getInvoiceKey(msg.sender, invoiceId);
+        Invoice storage inv = invoices[invoiceKey];
+
+        require(inv.merchant == msg.sender, "Only merchant can cancel");
         require(inv.status == InvoiceStatus.Active, "Invoice not active");
 
         inv.status = InvoiceStatus.Cancelled;
-        emit InvoiceCancelled(invoiceId);
+        emit InvoiceCancelled(invoiceKey);
     }
 }
