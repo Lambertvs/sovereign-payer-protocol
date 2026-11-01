@@ -10,7 +10,7 @@
 
 In the current cryptocurrency commerce ecosystem, retail merchants and offshore brokers (e.g., XM) outsource their deposit and payment infrastructure to centralized third-party payment gateways (e.g., BVNK, BitPay, CoinPayments). 
 
-These gateways instruct users to transfer tokens (such as USDT) directly to a raw, unmonitored external account (EOA). When a minor discrepancy occurs—such as network fees silently deducted by the sending exchange/wallet, resulting in an underpayment:
+These gateways instruct users to transfer tokens (such as USDT) directly to a raw, unmonitored external account (EOA). When a minor discrepancy occurs-such as network fees silently deducted by the sending exchange/wallet, resulting in an underpayment:
 
 1. **The Sweeper Absorb:** The gateway's automated sweeper bot sweeps the incoming tokens into the processor's central master vault pool to secure corporate liquidity.
 2. **The Webhook Failure:** The gateway's internal accounting marks the invoice as incomplete or `UNDERPAID` and refuses to notify the merchant.
@@ -27,8 +27,8 @@ The **Sovereign Payer Protocol (SPP)** solves this systemic failure at the code 
 
 1. **Atomic Invariance:** An invoice can only transition to `SETTLED` if the exact required token amount is supplied.
 2. **Deterministic Reversion:** If an underpayment is attempted via direct contract call, the EVM/TVM transaction **reverts entirely at the consensus layer**, ensuring funds never leave the payer's wallet.
-3. **Zero-Custody Partial Escrow:** If partial payments are allowed by the merchant parameters, the incoming tokens are locked in the smart contract escrow—**NOT in the merchant's or gateway's master vault**.
-4. **Autonomous Self-Refund (No Human Support Needed):** If an invoice expires or remains unfulfilled by the merchant after a set timeout (`refundDeadline`), the payer—or any public keeper bot—can trigger `claimRefund()`. The smart contract programmatically returns 100% of the deposited tokens back to the payer's nominated refund address.
+3. **Zero-Custody Partial Escrow:** If partial payments are allowed by the merchant parameters, the incoming tokens are locked in the smart contract escrow-**NOT in the merchant's or gateway's master vault**.
+4. **Autonomous Self-Refund (No Human Support Needed):** If an invoice expires or remains unfulfilled by the merchant after a set timeout (`refundDeadline`), the payer-or any public keeper bot-can trigger `claimRefund()`. The smart contract programmatically returns 100% of the deposited tokens back to the payer's nominated refund address.
 5. **No Intermediary Custody:** No CEO, no compliance officer, no tier-1 support agent, and no centralized gateway has the authority to block, seize, or withhold funds.
 
 ---
