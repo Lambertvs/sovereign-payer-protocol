@@ -10,7 +10,7 @@
 
 In the current cryptocurrency commerce ecosystem, retail merchants and offshore brokers (e.g., XM) outsource their deposit and payment infrastructure to centralized third-party payment gateways (e.g., BVNK, BitPay, CoinPayments). 
 
-These gateways instruct users to transfer tokens (such as USDT) directly to a raw, unmonitored external account (EOA). When a minor discrepancy occurs-such as network fees silently deducted by the sending exchange/wallet, resulting in an underpayment:
+These gateways instruct users to transfer tokens (such as USDT) directly to a raw, unmonitored external account (EOA). When a minor discrepancy occurs, such as network fees silently deducted by the sending exchange/wallet, resulting in an underpayment:
 
 1. **The Sweeper Absorb:** The gateway's automated sweeper bot sweeps the incoming tokens into the processor's central master vault pool to secure corporate liquidity.
 2. **The Webhook Failure:** The gateway's internal accounting marks the invoice as incomplete or `UNDERPAID` and refuses to notify the merchant.
