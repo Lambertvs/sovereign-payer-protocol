@@ -1,6 +1,6 @@
 # The Sovereign Payer Protocol (SPP)
 ### Decentralized, Trustless Merchant Checkout & Autonomous Escrow Standard
-**Authors:** Lambert Van Sittert & Antigravity (Susan)  
+**Authors:** Lambert Van Sittert
 **Target Networks:** TRON (TVM / TRC-20), EVM (Ethereum, Arbitrum, Polygon, BSC)  
 **Repository:** `https://github.com/Lambertvs/sovereign-payer-protocol`  
 
